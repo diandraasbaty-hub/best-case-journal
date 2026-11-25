@@ -185,7 +185,7 @@ const demoStore = {
   async init() { return JSON.parse(localStorage.bcjDemoUser || 'null'); },
   async signIn(email) { localStorage.bcjDemoUser = JSON.stringify({ email }); return 'in'; },
   async signOut() { localStorage.removeItem('bcjDemoUser'); },
-  async load() {
+  async load(again) {
     const list = await fetch('prompts.json').then(r => r.json());
     return {
       prompts: Object.fromEntries(list.map(p => [p.date, p])),
@@ -218,7 +218,7 @@ const cloudStore = {
     return 'sent';
   },
   async signOut() { await sb.auth.signOut(); },
-  async load() {
+  async load(again) {
     // ponytail: one request returns up to 1,000 entries (about 16 months of daily writing). Page through when someone gets there.
     const [p, e, a, st] = await Promise.all([
       sb.from('prompts').select('day,title,prompt'),
@@ -227,6 +227,14 @@ const cloudStore = {
       sb.rpc('journal_stats'),
     ]);
     if (p.error || e.error) throw p.error || e.error;
+    if (a.data !== true && !again) {
+      // Locked out? Ask the doorman to check the sign-up list once more, in case they just joined.
+      const { data } = await sb.auth.getSession();
+      const r = await fetch(CONFIG.SUPABASE_URL + '/functions/v1/send-email', {
+        method: 'POST', headers: { Authorization: 'Bearer ' + data.session.access_token, 'Content-Type': 'application/json' }, body: '{"check":true}',
+      }).then(r => r.text()).catch(() => '');
+      if (r === 'in') return this.load(true);
+    }
     return {
       prompts: Object.fromEntries(p.data.map(r => [r.day, r])),
       entries: Object.fromEntries(e.data.map(r => [r.entry_date + '|' + r.kind, r.body])),
@@ -310,7 +318,10 @@ const band = (title, when) => `
   </header>`;
 const notes = () => `
   ${DEMO || PREVIEW_DAY ? `<p class="note">${DEMO ? 'Demo. What you write stays on this device. ' : ''}${PREVIEW_DAY ? `Pretending today is ${esc(nice(PREVIEW_DAY, { month: 'long', day: 'numeric', year: 'numeric' }))}.` : ''}</p>` : ''}`;
-const lockCard = () => S.access ? '' : `<section class="card butter"><h2>The journal lives inside the Club now.</h2>
+const PRE_CLUB = () => today() < '2027-02-01'; // before February the way in is the free challenge, after it the Club
+const lockCard = () => S.access ? '' : PRE_CLUB() ? `<section class="card butter"><h2>One quick step first.</h2>
+  <p>This journal is for Best Case 2027. Sign up (it's free), then come back here. Use the same email and you're in.</p>
+  <a class="btn" style="margin-top:16px" href="${esc(CONFIG.CLUB_URL)}">Join Best Case 2027</a></section>` : `<section class="card butter"><h2>The journal lives inside the Club now.</h2>
   <p>${Object.keys(S.entries).length ? 'Everything you wrote is still yours. You can read it and download it anytime. To keep writing, come join us.' : "Anything you wrote is saved. Join the Club and it's right where you left it. Already a member? Sign out and use your Club email."}</p>
   <a class="btn" style="margin-top:16px" href="${esc(CONFIG.CLUB_URL)}">See the Club</a></section>`;
 const dayNumber = d => { const n = Math.round((parse(d) - parse(CONFIG.CHALLENGE_START)) / 864e5) + 1; return n >= 1 && n <= 28 ? n : 0; };
@@ -433,7 +444,7 @@ function go(view, date) {
   Object.keys(pending).forEach(flush);
   S.view = view; S.date = date || today();
   // Not a member and reading is switched off too: only the "join the Club" card shows.
-  if (!S.access && !Object.keys(S.entries).length) { tabs.hidden = true; app.innerHTML = band('See you in the <em>Club</em>', esc(nice(today()))) + `<div class="pad">${notes()}${lockCard()}${signedIn()}</div>`; wire(); landed('Members only'); return; }
+  if (!S.access && !Object.keys(S.entries).length) { tabs.hidden = true; app.innerHTML = band(PRE_CLUB() ? 'Almost <em>there</em>' : 'See you in the <em>Club</em>', esc(nice(today()))) + `<div class="pad">${notes()}${lockCard()}${signedIn()}</div>`; wire(); landed(PRE_CLUB() ? 'Sign up first' : 'Members only'); return; }
   tabs.hidden = false;
   tabs.querySelectorAll('button').forEach(b => b.dataset.view === view && S.date === today() ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current'));
   view === 'entries' ? entriesScreen() : dayScreen();
